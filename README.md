@@ -10,7 +10,7 @@ Gaming-focused: keeps Xbox/GameBar, strips everything else.
 Open **PowerShell as Administrator** and run:
 
 ```powershell
-irm https://raw.githubusercontent.com/YavuzAkbay/win11-gaming-playbook/main/Win11-Gaming-Playbook.ps1 | iex
+irm https://raw.githubusercontent.com/YavuzAkbay/win11-playbook/main/Win11-Gaming-Playbook.ps1 | iex
 ```
 
 > Must be an elevated (Admin) PowerShell window. The script will error with instructions if you forget.
