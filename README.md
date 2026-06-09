@@ -98,3 +98,14 @@ Set-ExecutionPolicy Bypass -Scope Process -Force
 - Reboot required for: HAGS, HPET, bcdedit changes, power plan, and service changes
 - A system restore point is created before any changes (section 01)
 - `$ErrorActionPreference = "SilentlyContinue"` — non-critical failures are swallowed silently
+
+---
+
+## Disclaimer
+
+This project is a **configuration playbook only**. It applies registry tweaks, adjusts Windows settings, removes built-in apps, and installs gaming runtimes/launchers from their official sources.
+
+- No modified or pre-activated Windows ISOs are distributed here
+- No Windows activation tools, KMS scripts, or license bypasses are included or endorsed
+- You must own a valid Windows 11 license
+- Use at your own risk — a restore point is created before changes, but always back up important data first
