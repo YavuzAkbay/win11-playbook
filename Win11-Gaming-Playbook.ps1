@@ -198,7 +198,8 @@ function Get-BrowserProgId([string]$Browser) {
                 $key = Get-ChildItem $hive -ErrorAction SilentlyContinue |
                     Where-Object { $_.PSChildName -imatch "helium" } | Select-Object -First 1
                 if ($key) {
-                    $progId = (Get-ItemProperty "$($key.PSPath)\Capabilities\URLAssociations" -Name "http" -ErrorAction SilentlyContinue)?.http
+                    $_reg = Get-ItemProperty "$($key.PSPath)\Capabilities\URLAssociations" -Name "http" -ErrorAction SilentlyContinue
+                    $progId = if ($_reg) { $_reg.http } else { $null }
                     if ($progId) { return $progId }
                 }
             }
@@ -211,7 +212,8 @@ function Get-BrowserProgId([string]$Browser) {
                 $key = Get-ChildItem $hive -ErrorAction SilentlyContinue |
                     Where-Object { $_.PSChildName -imatch "brave" } | Select-Object -First 1
                 if ($key) {
-                    $progId = (Get-ItemProperty "$($key.PSPath)\Capabilities\URLAssociations" -Name "http" -ErrorAction SilentlyContinue)?.http
+                    $_reg = Get-ItemProperty "$($key.PSPath)\Capabilities\URLAssociations" -Name "http" -ErrorAction SilentlyContinue
+                    $progId = if ($_reg) { $_reg.http } else { $null }
                     if ($progId) { return $progId }
                 }
             }
@@ -224,7 +226,8 @@ function Get-BrowserProgId([string]$Browser) {
                 $key = Get-ChildItem $hive -ErrorAction SilentlyContinue |
                     Where-Object { $_.PSChildName -imatch "firefox" } | Select-Object -First 1
                 if ($key) {
-                    $progId = (Get-ItemProperty "$($key.PSPath)\Capabilities\URLAssociations" -Name "http" -ErrorAction SilentlyContinue)?.http
+                    $_reg = Get-ItemProperty "$($key.PSPath)\Capabilities\URLAssociations" -Name "http" -ErrorAction SilentlyContinue
+                    $progId = if ($_reg) { $_reg.http } else { $null }
                     if ($progId) { return $progId }
                 }
             }
