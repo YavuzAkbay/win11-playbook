@@ -34,7 +34,7 @@
       12 - Telemetry IP block (hosts file)
       13 - Browser (interactive: remove Edge, install Helium/Brave/Firefox)
       14 - Memory & I/O tweaks
-      15 - Extended tweaks (mouse accel, FSO, MPO, Teredo, WPBT, hibernation,
+      15 - Extended tweaks (mouse accel, FSO, Teredo, WPBT, hibernation,
            SvcHost, sticky keys, classic context menu, temp cleanup)
       16 - Power & performance (USB suspend, PCIe ASPM, processor min/max,
            sleep/hibernate, display, wireless, fast startup, timer resolution,
@@ -750,8 +750,8 @@ Set-Reg $cc "DisableSoftLanding"              1
 Set-Reg $cc "DisableThirdPartySuggestions"    1
 Set-Reg $cc "DisableWindowsConsumerFeatures"  1   # Prevents auto-install of consumer apps
 
-# Taskbar left-align (comment out if you prefer center)
-Set-Reg "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Advanced" "TaskbarAl" 0
+# Taskbar alignment: 0 = left, 1 = center (Windows 11 default)
+# Set-Reg "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Advanced" "TaskbarAl" 0
 
 # Explorer: show file extensions & hidden files
 Set-Reg "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Advanced" "HideFileExt" 0
@@ -891,8 +891,14 @@ Set-Reg "HKCU:\SOFTWARE\Microsoft\GameBar" "ShowStartupPanel"    0
 Write-Info "Game Mode enabled."
 
 # ── Variable Refresh Rate (Freesync / G-Sync via DWM) ────────────────────────
-Set-Reg "HKCU:\SOFTWARE\Microsoft\DirectX\UserGpuPreferences" "DirectXUserGlobalSettings" "VRROptimizeEnable=1;" "String"
-Write-Info "VRR/Adaptive Sync hint set."
+# We do NOT force Windows' "Variable refresh rate" / "Optimizations for windowed
+# games" on. When enabled, these route presentation through the DWM compositor
+# and can make borderless/windowed games feel like VSync is permanently ON —
+# your in-game "VSync off" toggle then appears to do nothing. VRR is best left to
+# the GPU driver (NVIDIA G-SYNC / AMD FreeSync) and your monitor's OSD instead.
+# Both flags are explicitly set OFF so the playbook never surprises users.
+Set-Reg "HKCU:\SOFTWARE\Microsoft\DirectX\UserGpuPreferences" "DirectXUserGlobalSettings" "VRROptimizeEnable=0;SwapEffectUpgradeEnable=0;" "String"
+Write-Info "Windows VRR/windowed optimizations left OFF (use your GPU driver/monitor for G-Sync/FreeSync)."
 
 # ── CPU priority: foreground programs over background ─────────────────────────
 # 0x26 = Foreground boost, Variable interval, Short quantum (gaming sweet spot)
@@ -1265,11 +1271,22 @@ Set-Reg "HKCU:\System\GameConfigStore" "GameDVR_FSEBehavior"                   2
 Set-Reg "HKCU:\System\GameConfigStore" "GameDVR_HonorUserFSEBehaviorMode"      1
 Write-Info "Fullscreen Optimizations disabled (true exclusive fullscreen enabled)."
 
-# ── Multiplane Overlay (MPO) — DISABLE ───────────────────────────────────────
-# MPO causes screen flickering, black screens, and micro-stutters on many GPUs
-# (especially NVIDIA). OverlayTestMode=5 is the well-known fix.
-Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\Dwm" "OverlayTestMode" 5
-Write-Info "Multiplane Overlay (MPO) disabled — stutter fix applied."
+# ── Multiplane Overlay (MPO) — LEFT ENABLED BY DEFAULT ───────────────────────
+# Older guides disabled MPO (OverlayTestMode=5) to fix flickering / black
+# screens / micro-stutter on some (mostly NVIDIA) GPUs. BUT disabling MPO forces
+# ALL rendering through the DWM compositor, which makes borderless/windowed games
+# behave as if VSync is permanently ON — the in-game "VSync off" setting appears
+# to do nothing. Recent GPU drivers have fixed the original MPO bugs, so MPO is
+# LEFT ENABLED here to avoid that forced-VSync feel.
+#
+# Actively remove a leftover OverlayTestMode value so re-running this playbook
+# self-heals machines that disabled MPO with an earlier version. (Takes effect
+# after a reboot.) Only uncomment the Set-Reg line below if you STILL get
+# MPO-related flicker/stutter AND accept the forced-VSync side effect in
+# windowed/borderless games:
+# Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\Dwm" "OverlayTestMode" 5
+Remove-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\Dwm" -Name "OverlayTestMode" -ErrorAction SilentlyContinue
+Write-Info "Multiplane Overlay (MPO) left enabled (prevents forced-VSync feel in windowed/borderless games; reboot to apply)."
 
 # ── Teredo & IPv4 Preferred ───────────────────────────────────────────────────
 # Teredo = IPv6 tunneling over IPv4, adds overhead and latency.
