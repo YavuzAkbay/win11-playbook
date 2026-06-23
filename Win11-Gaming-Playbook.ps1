@@ -98,8 +98,11 @@ function Disable-Service([string]$Name) {
 }
 
 function Disable-Task([string]$TaskPath, [string]$TaskName) {
-    Disable-ScheduledTask -TaskPath $TaskPath -TaskName $TaskName -ErrorAction SilentlyContinue | Out-Null
-    Write-Info "Disabled task: $TaskName"
+    $task = Get-ScheduledTask -TaskPath $TaskPath -TaskName $TaskName -ErrorAction SilentlyContinue
+    if ($task) {
+        Disable-ScheduledTask -InputObject $task -ErrorAction SilentlyContinue | Out-Null
+        Write-Info "Disabled task: $TaskName"
+    }
 }
 
 function Set-WindowsUpdate-RebootSafety {
@@ -845,7 +848,6 @@ Write-Section "07 — Service Optimization"
     "spectrum"              # Windows Perception Service (Mixed Reality)
     "perceptionsimulation"  # Windows Perception Simulation
     "HvHost"                # HV Host Service
-    "WSearch"               # Windows Search indexer — comment out if you use search heavily
     # NOTE: wlidsvc (Microsoft Account Sign-in Assistant) is intentionally NOT here.
     # XblAuthManager and XblGameSave depend on it — disabling it silently breaks
     # Xbox Live authentication. It is set to Manual (demand-start) below instead.
