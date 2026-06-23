@@ -5,7 +5,7 @@
 
 .DESCRIPTION
     Aggressive Windows 11 debloat + gaming optimizations.
-    Gaming-focused: keeps Xbox/GameBar, strips everything else.
+    Gaming-focused: Xbox/GameBar kept by default, optional full removal.
 
     HOW TO USE:
       1. Right-click this file -> "Run with PowerShell" (as Admin)
@@ -29,6 +29,7 @@
       07 - Service optimization
       08 - Windows Update control (interactive: recommended / minimal / off)
       09 - Gaming optimizations (HAGS, HPET, Ultimate Performance, Nagle)
+      09b - Xbox removal (optional: apps, services, Game Bar, Game Mode)
       10 - Visual performance tweaks
       11 - Privacy deep clean
       12 - Telemetry IP block (hosts file)
@@ -314,6 +315,36 @@ function Invoke-SteamGuideButtonConfig {
     }
 }
 
+function Disable-SteamOverlay {
+    $steamReg  = Get-ItemProperty "HKCU:\SOFTWARE\Valve\Steam" -ErrorAction SilentlyContinue
+    $steamPath = $steamReg.SteamPath
+    if (-not $steamPath) {
+        Write-Skip "Steam not found — overlay config skipped."
+        return
+    }
+
+    $patched = 0
+    Get-ChildItem "$steamPath\userdata" -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+        $lc = Join-Path $_.FullName "config\localconfig.vdf"
+        if (Test-Path $lc) {
+            $vdf = Get-Content $lc -Raw
+            if ($vdf -match '"EnableGameOverlay"\s+"[^"]*"') {
+                $vdf = $vdf -replace '"EnableGameOverlay"\s+"[^"]*"', '"EnableGameOverlay"		"0"'
+            } else {
+                $vdf = $vdf -replace '("UserLocalConfigStore"\s*\{)', "`$1`n`t`t`"EnableGameOverlay`"`t`"0`""
+            }
+            $vdf | Set-Content $lc -Encoding UTF8 -NoNewline
+            $patched++
+        }
+    }
+
+    if ($patched -gt 0) {
+        Write-OK "Steam overlay disabled ($patched user profile(s) patched)."
+    } else {
+        Write-Skip "No Steam user profiles found — overlay config skipped (Steam never launched)."
+    }
+}
+
 # Admin check
 if (-NOT ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
     [Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -362,6 +393,19 @@ $GamingChoices = Read-MultiChoice "Which gaming launchers should be installed?" 
     @{ Key = "5"; Label = $GamingCatalog.EA.Label;       Value = "EA" }
 ) -AllowNone
 
+$RemoveXbox = Read-YesNo "Remove Xbox components (apps, services, Game Bar, Game Mode)?" $false
+
+$ConfigureController = Read-YesNo "Configure a controller frontend app?" $false
+if ($ConfigureController) {
+    $ControllerApp = Read-SingleChoice "Which app should handle controller input?" @(
+        @{ Key = "1"; Label = "Steam — install Steam, remove Game Bar"; Value = "Steam" }
+        @{ Key = "2"; Label = "Game Bar — keep Xbox Game Bar, disable Steam Big Picture capture"; Value = "GameBar" }
+        @{ Key = "3"; Label = "Playnite — install Playnite, remove Game Bar, remap guide button"; Value = "Playnite" }
+    )
+} else {
+    $ControllerApp = $null
+}
+
 $WindowsUpdateChoice = Read-SingleChoice "Windows Update policy?" @(
     @{ Key = "1"; Label = "Recommended — notify before install, monthly patches OK, no version upgrades or driver swaps"; Value = "Recommended" }
     @{ Key = "2"; Label = "Minimal — defer all updates; you check Settings manually when ready";                         Value = "Minimal" }
@@ -375,6 +419,10 @@ Write-Host "  Your choices:" -ForegroundColor Cyan
 Write-Host "    Edge removal:    $(if ($RemoveEdge) { 'Yes' } else { 'No' })" -ForegroundColor Gray
 Write-Host "    Browser:         $BrowserChoice" -ForegroundColor Gray
 Write-Host "    Gaming apps:     $(if ($GamingChoices.Count) { $GamingChoices -join ', ' } else { 'None' })" -ForegroundColor Gray
+Write-Host "    Xbox removal:    $(if ($RemoveXbox) { 'Yes — apps, services, Game Bar, Game Mode removed' } else { 'No (preserved)' })" -ForegroundColor Gray
+if ($ConfigureController) {
+    Write-Host "    Controller app:  $ControllerApp" -ForegroundColor Gray
+}
 Write-Host "    Windows Update:  $WindowsUpdateChoice" -ForegroundColor Gray
 Write-Host ""
 
@@ -967,6 +1015,66 @@ Set-Reg "HKCU:\SOFTWARE\Microsoft\GameBar"                   "ShowStartupPanel" 
 Write-Info "Xbox overlay blocked via policy."
 
 Write-OK "Gaming optimizations applied."
+#endregion
+
+# ─────────────────────────────────────────────────────────────────────────────
+#region 09b — XBOX REMOVAL (OPTIONAL)
+# ─────────────────────────────────────────────────────────────────────────────
+Write-Section "09b — Xbox Removal"
+
+if ($RemoveXbox) {
+    # ── Xbox UWP apps ─────────────────────────────────────────────────────────
+    Write-Info "Removing Xbox apps..."
+    $xboxApps = @(
+        "Microsoft.XboxApp"
+        "Microsoft.XboxGameOverlay"
+        "Microsoft.XboxGamingOverlay"
+        "Microsoft.XboxIdentityProvider"
+        "Microsoft.XboxSpeechToTextOverlay"
+        "Microsoft.GamingApp"
+        "Microsoft.Gaming.Services"
+    )
+    foreach ($app in $xboxApps) {
+        Get-AppxPackage -Name $app -AllUsers -ErrorAction SilentlyContinue | ForEach-Object {
+            Register-AppxDeprovisioned $_.PackageFamilyName
+            Remove-AppxPackage -Package $_.PackageFullName -AllUsers -ErrorAction SilentlyContinue
+            Write-Info "Removed: $app"
+        }
+        Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue |
+            Where-Object { $_.PackageName -like "*$app*" } |
+            ForEach-Object {
+                Register-AppxDeprovisioned $_.DisplayName
+                Remove-AppxProvisionedPackage -Online -PackageName $_.PackageName -ErrorAction SilentlyContinue | Out-Null
+            }
+    }
+
+    # ── Xbox services ─────────────────────────────────────────────────────────
+    Write-Info "Disabling Xbox services..."
+    @("XblAuthManager", "XblGameSave", "XboxGipSvc", "XboxNetApiSvc", "GamingServices") | ForEach-Object {
+        Disable-Service $_
+    }
+    # wlidsvc (Microsoft Account Sign-in) can now be fully disabled —
+    # Xbox auth no longer needs it.
+    Disable-Service "wlidsvc"
+
+    # ── Game Bar / Game DVR ───────────────────────────────────────────────────
+    Write-Info "Disabling Game Bar and Game DVR..."
+    Set-Reg "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\GameDVR" "AppCaptureEnabled"         0
+    Set-Reg "HKCU:\System\GameConfigStore"                             "GameDVR_Enabled"           0
+    Set-Reg "HKCU:\SOFTWARE\Microsoft\GameBar"                         "UseNexusForGameBarEnabled" 0
+    Set-Reg "HKCU:\SOFTWARE\Microsoft\GameBar"                         "ShowStartupPanel"          0
+    Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\GameDVR"        "AllowGameDVR"              0
+    Disable-Task "\Microsoft\XblGameSave\" "XblGameSaveTask"
+
+    # ── Game Mode ─────────────────────────────────────────────────────────────
+    Write-Info "Disabling Game Mode..."
+    Set-Reg "HKCU:\SOFTWARE\Microsoft\GameBar" "AutoGameModeEnabled" 0
+    Set-Reg "HKCU:\SOFTWARE\Microsoft\GameBar" "AllowAutoGameMode"   0
+
+    Write-OK "Xbox components removed."
+} else {
+    Write-Skip "Xbox removal skipped — Xbox components preserved."
+}
 #endregion
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1712,8 +1820,10 @@ if ($GamingChoices.Count -gt 0) {
     }
 
     if ($GamingChoices -contains "Steam") {
-        Write-Info "Configuring Steam Guide button (Playnite-friendly)..."
-        Invoke-SteamGuideButtonConfig
+        if ($ControllerApp -ne "Steam") {
+            Write-Info "Configuring Steam Guide button (controller-friendly)..."
+            Invoke-SteamGuideButtonConfig
+        }
     }
 } else {
     Write-Skip "No gaming launchers selected — skipped."
@@ -1725,6 +1835,67 @@ Remove-Item "$env:TEMP\openal-soft*" -Recurse -Force -ErrorAction SilentlyContin
 Remove-Item "$env:TEMP\xnafx40_redist.msi" -Force -ErrorAction SilentlyContinue
 
 Write-OK "All gaming runtimes & redistributables installed."
+#endregion
+
+# ─────────────────────────────────────────────────────────────────────────────
+#region 17b — CONTROLLER APP
+# ─────────────────────────────────────────────────────────────────────────────
+Write-Section "17b — Controller App"
+
+if (-not $ConfigureController) {
+    Write-Skip "Controller configuration skipped."
+} else {
+    switch ($ControllerApp) {
+
+        "Steam" {
+            Install-Pkg "Valve.Steam" "Steam"
+            Write-OK "Steam installed."
+
+            Write-Info "Removing Game Bar..."
+            Get-AppxPackage -Name "Microsoft.XboxGamingOverlay" -AllUsers -ErrorAction SilentlyContinue |
+                ForEach-Object { Remove-AppxPackage -Package $_.PackageFullName -AllUsers -ErrorAction SilentlyContinue }
+            Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue |
+                Where-Object { $_.PackageName -like "*XboxGamingOverlay*" } |
+                ForEach-Object { Remove-AppxProvisionedPackage -Online -PackageName $_.PackageName -ErrorAction SilentlyContinue }
+            Write-OK "Game Bar removed. Steam is the controller frontend."
+        }
+
+        "GameBar" {
+            Write-Info "Disabling Steam Big Picture guide button capture..."
+            Invoke-SteamGuideButtonConfig
+            Write-OK "Game Bar is the controller frontend."
+        }
+
+        "Playnite" {
+            Write-Info "Disabling Steam overlay..."
+            Disable-SteamOverlay
+
+            Write-Info "Removing Game Bar..."
+            Get-AppxPackage -Name "Microsoft.XboxGamingOverlay" -AllUsers -ErrorAction SilentlyContinue |
+                ForEach-Object { Remove-AppxPackage -Package $_.PackageFullName -AllUsers -ErrorAction SilentlyContinue }
+            Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue |
+                Where-Object { $_.PackageName -like "*XboxGamingOverlay*" } |
+                ForEach-Object { Remove-AppxProvisionedPackage -Online -PackageName $_.PackageName -ErrorAction SilentlyContinue }
+            Write-OK "Game Bar removed."
+
+            Install-Pkg "Playnite.Playnite" "Playnite"
+            Write-OK "Playnite installed."
+
+            Write-Info "Remapping guide button (ms-gamebar) to Playnite fullscreen..."
+            $playniteExe = "`"$env:LOCALAPPDATA\Playnite\Playnite.FullscreenApp.exe`""
+            New-Item "HKCU:\Software\Classes\ms-gamebar" -Force | Out-Null
+            Set-ItemProperty "HKCU:\Software\Classes\ms-gamebar" "(default)" "URL:ms-gamebar"
+            New-ItemProperty "HKCU:\Software\Classes\ms-gamebar" "URL Protocol" -Value "" -Force | Out-Null
+            New-Item "HKCU:\Software\Classes\ms-gamebar\shell\open\command" -Force | Out-Null
+            Set-ItemProperty "HKCU:\Software\Classes\ms-gamebar\shell\open\command" "(default)" $playniteExe
+
+            Write-Info "Disabling Steam guide button capture..."
+            Invoke-SteamGuideButtonConfig
+
+            Write-OK "Playnite is the controller frontend. Guide button launches Playnite fullscreen."
+        }
+    }
+}
 #endregion
 
 # ─────────────────────────────────────────────────────────────────────────────
