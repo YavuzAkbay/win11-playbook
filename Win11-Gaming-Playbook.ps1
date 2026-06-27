@@ -396,14 +396,16 @@ $GamingChoices = Read-MultiChoice "Which gaming launchers should be installed?" 
     @{ Key = "5"; Label = $GamingCatalog.EA.Label;       Value = "EA" }
 ) -AllowNone
 
+Write-Host "  NOTE: If you plan to use XboxFullscreenExperienceTool after this script," -ForegroundColor Yellow
+Write-Host "        answer NO — Xbox App, Game Bar and Xbox services must stay installed." -ForegroundColor Yellow
 $RemoveXbox = Read-YesNo "Remove Xbox components (apps, services, Game Bar, Game Mode)?" $false
 
 $ConfigureController = Read-YesNo "Configure a controller frontend app?" $false
 if ($ConfigureController) {
     $ControllerApp = Read-SingleChoice "Which app should handle controller input?" @(
-        @{ Key = "1"; Label = "Steam — install Steam, remove Game Bar"; Value = "Steam" }
-        @{ Key = "2"; Label = "Game Bar — keep Xbox Game Bar, disable Steam Big Picture capture"; Value = "GameBar" }
-        @{ Key = "3"; Label = "Playnite — install Playnite, remove Game Bar, remap guide button"; Value = "Playnite" }
+        @{ Key = "1"; Label = "Steam — install Steam, remove Game Bar [incompatible with XboxFullscreenExperienceTool]"; Value = "Steam" }
+        @{ Key = "2"; Label = "Game Bar — keep Xbox Game Bar [required for XboxFullscreenExperienceTool]"; Value = "GameBar" }
+        @{ Key = "3"; Label = "Playnite — install Playnite + AutoHotkey, remove Game Bar [incompatible with XboxFullscreenExperienceTool]"; Value = "Playnite" }
     )
 } else {
     $ControllerApp = $null
@@ -839,7 +841,8 @@ Write-Section "07 — Service Optimization"
     "RetailDemo"            # Retail Demo
     "SCPolicySvc"           # Smart Card Removal Policy
     "SCardSvr"              # Smart Card
-    "TabletInputService"    # Touch Keyboard & Handwriting
+    # NOTE: TabletInputService left at Manual (demand-start) — XboxFullscreenExperienceTool
+    #       auto-simulates touch input; disabling this service breaks the gamepad keyboard.
     "icssvc"                # Mobile Hotspot
     "PhoneSvc"              # Phone Service
     "SEMgrSvc"              # NFC/Payments
@@ -1008,13 +1011,9 @@ Get-ChildItem $nicParams -ErrorAction SilentlyContinue | ForEach-Object {
 }
 Write-Info "Nagle algorithm disabled on all interfaces."
 
-# ── Xbox overlay — block via policy ──────────────────────────────────────────
-# Prevents the Xbox overlay from popping up on Guide button press.
-# Policy key survives Xbox app reinstalls and Windows updates.
-Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\GameDVR" "AllowGameDVR"             0
-Set-Reg "HKCU:\SOFTWARE\Microsoft\GameBar"                   "UseNexusForGameBarEnabled" 0
-Set-Reg "HKCU:\SOFTWARE\Microsoft\GameBar"                   "ShowStartupPanel"          0
-Write-Info "Xbox overlay blocked via policy."
+# NOTE: Xbox overlay policy block removed — XboxFullscreenExperienceTool requires the
+# Guide button (Nexus) to trigger Game Bar / FSE. AllowGameDVR=0 and
+# UseNexusForGameBarEnabled=0 would silently break FSE activation.
 
 Write-OK "Gaming optimizations applied."
 #endregion
@@ -1647,10 +1646,14 @@ Write-Section "17 — Gaming Runtimes & Redistributables"
 # winget errors are suppressed — already-installed packages just skip silently.
 
 function Install-Pkg([string]$Id, [string]$Label) {
+    $check = winget list --id $Id --exact --accept-source-agreements 2>&1 | Out-String
+    if ($check -match [regex]::Escape($Id)) {
+        Write-Skip "$Label already installed — skipped."
+        return
+    }
     Write-Info "Installing $Label..."
     winget install --id $Id --exact --silent `
-        --accept-source-agreements --accept-package-agreements `
-        --force 2>&1 | Out-Null
+        --accept-source-agreements --accept-package-agreements 2>&1 | Out-Null
 }
 
 function Get-Runtime([string]$Url, [string]$OutFile) {
@@ -1719,52 +1722,70 @@ Write-OK ".NET Desktop Runtimes done."
 # This installs the LEGACY D3DX components that DX12 does NOT include:
 #   D3DX9, D3DX10, D3DX11, XAudio 2.7, X3DAudio, XInput 1.1-1.3, XACT.
 # Without this, thousands of games from 2004–2014 won't even launch.
-Write-Info "Downloading DirectX End-User Runtime (June 2010, ~100 MB)..."
-
-$dxDir  = "$env:TEMP\DX_June2010"
-$dxSfx  = "$dxDir\dx_redist.exe"
-$dxExe  = "$dxDir\DXSETUP.exe"
-New-Item -ItemType Directory -Path $dxDir -Force | Out-Null
-
-if (!(Test-Path $dxExe)) {
-    $dxUrl = "https://download.microsoft.com/download/8/4/A/84A35BF1-DAFE-4AE8-82AF-AD2AE20B6B14/directx_Jun2010_redist.exe"
-    $ok = Get-Runtime $dxUrl $dxSfx
-    if ($ok) {
-        # Self-extracting cabinet — /T specifies output dir, /Q is quiet
-        Start-Process $dxSfx -ArgumentList "/T:`"$dxDir`" /Q" -Wait -ErrorAction SilentlyContinue
-    }
-}
-
-if (Test-Path $dxExe) {
-    Write-Info "Running DXSETUP silently..."
-    Start-Process $dxExe -ArgumentList "/silent" -Wait -ErrorAction SilentlyContinue
-    Write-OK "DirectX End-User Runtime installed (D3DX9/10/11, XAudio 2.7, XInput)."
+if (Test-Path "$env:SystemRoot\System32\d3dx9_43.dll") {
+    Write-Skip "DirectX End-User Runtime (June 2010) already installed — skipped."
 } else {
-    Write-Host "  [!] DirectX download failed — install manually:" -ForegroundColor Yellow
-    Write-Host "      https://www.microsoft.com/en-us/download/details.aspx?id=8109" -ForegroundColor DarkGray
+    Write-Info "Downloading DirectX End-User Runtime (June 2010, ~100 MB)..."
+
+    $dxDir  = "$env:TEMP\DX_June2010"
+    $dxSfx  = "$dxDir\dx_redist.exe"
+    $dxExe  = "$dxDir\DXSETUP.exe"
+    New-Item -ItemType Directory -Path $dxDir -Force | Out-Null
+
+    if (!(Test-Path $dxExe)) {
+        $dxUrl = "https://download.microsoft.com/download/8/4/A/84A35BF1-DAFE-4AE8-82AF-AD2AE20B6B14/directx_Jun2010_redist.exe"
+        $ok = Get-Runtime $dxUrl $dxSfx
+        if ($ok) {
+            # Self-extracting cabinet — /T specifies output dir, /Q is quiet
+            Start-Process $dxSfx -ArgumentList "/T:`"$dxDir`" /Q" -Wait -ErrorAction SilentlyContinue
+        }
+    }
+
+    if (Test-Path $dxExe) {
+        Write-Info "Running DXSETUP silently..."
+        Start-Process $dxExe -ArgumentList "/silent" -Wait -ErrorAction SilentlyContinue
+        Write-OK "DirectX End-User Runtime installed (D3DX9/10/11, XAudio 2.7, XInput)."
+    } else {
+        Write-Host "  [!] DirectX download failed — install manually:" -ForegroundColor Yellow
+        Write-Host "      https://www.microsoft.com/en-us/download/details.aspx?id=8109" -ForegroundColor DarkGray
+    }
 }
 
 # ── DirectPlay (Windows Feature) ─────────────────────────────────────────────
 # Required by classic LAN/IPX multiplayer games:
 # Age of Empires II (original), Diablo II, StarCraft, Red Alert 2, etc.
-Write-Info "Enabling DirectPlay..."
-Enable-WindowsOptionalFeature -Online -FeatureName "DirectPlay" -All -NoRestart -ErrorAction SilentlyContinue | Out-Null
-Write-OK "DirectPlay enabled."
+$directPlay = Get-WindowsOptionalFeature -Online -FeatureName "DirectPlay" -ErrorAction SilentlyContinue
+if ($directPlay -and $directPlay.State -ne "Enabled") {
+    Write-Info "Enabling DirectPlay..."
+    Enable-WindowsOptionalFeature -Online -FeatureName "DirectPlay" -All -NoRestart -ErrorAction SilentlyContinue | Out-Null
+    Write-OK "DirectPlay enabled."
+} else {
+    Write-Skip "DirectPlay already enabled."
+}
 
 # ── XNA Framework 4.0 Redistributable ────────────────────────────────────────
 # Required for games built on Microsoft XNA:
 # Stardew Valley (pre-1.6), FEZ, Terraria (old builds), many XBLA ports, etc.
 # Stardew Valley 1.6+ moved to MonoGame, but the XNA runtime is still needed
 # for the thousands of other XNA titles on Steam.
-Write-Info "Downloading XNA Framework 4.0..."
-$xnaPath = "$env:TEMP\xnafx40_redist.msi"
-$xnaUrl  = "https://download.microsoft.com/download/A/C/2/AC2C903B-E6E8-42C2-9FD7-BEBAC362A930/xnafx40_redist.msi"
-$ok = Get-Runtime $xnaUrl $xnaPath
-if ($ok -and (Test-Path $xnaPath)) {
-    Start-Process msiexec.exe -ArgumentList "/i `"$xnaPath`" /quiet /norestart" -Wait -ErrorAction SilentlyContinue
-    Write-OK "XNA Framework 4.0 installed."
+$xnaInstalled = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
+                                 "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*" `
+                    -ErrorAction SilentlyContinue |
+                    Where-Object { $_.DisplayName -like "*XNA Framework*4.0*" } |
+                    Select-Object -First 1
+if ($xnaInstalled) {
+    Write-Skip "XNA Framework 4.0 already installed — skipped."
 } else {
-    Write-Host "  [!] XNA download failed — some indie games may not launch." -ForegroundColor Yellow
+    Write-Info "Downloading XNA Framework 4.0..."
+    $xnaPath = "$env:TEMP\xnafx40_redist.msi"
+    $xnaUrl  = "https://download.microsoft.com/download/A/C/2/AC2C903B-E6E8-42C2-9FD7-BEBAC362A930/xnafx40_redist.msi"
+    $ok = Get-Runtime $xnaUrl $xnaPath
+    if ($ok -and (Test-Path $xnaPath)) {
+        Start-Process msiexec.exe -ArgumentList "/i `"$xnaPath`" /quiet /norestart" -Wait -ErrorAction SilentlyContinue
+        Write-OK "XNA Framework 4.0 installed."
+    } else {
+        Write-Host "  [!] XNA download failed — some indie games may not launch." -ForegroundColor Yellow
+    }
 }
 
 # ── OpenAL Soft ───────────────────────────────────────────────────────────────
@@ -1772,31 +1793,35 @@ if ($ok -and (Test-Path $xnaPath)) {
 # OpenAL Soft is the open-source, actively maintained implementation.
 # (Note: most modern games ship their own OpenAL32.dll, but some rely on a
 # system-level install — having this prevents audio failures in those titles.)
-Write-Info "Installing OpenAL Soft..."
-$oalUrl  = "https://github.com/kcat/openal-soft/releases/download/1.23.1/openal-soft-1.23.1-bin.zip"
-$oalZip  = "$env:TEMP\openal-soft.zip"
-$oalDir  = "$env:TEMP\openal-soft"
-$ok = Get-Runtime $oalUrl $oalZip
-if ($ok) {
-    Expand-Archive -Path $oalZip -DestinationPath $oalDir -Force -ErrorAction SilentlyContinue
-    # Run the Win64 installer (router.exe copies OpenAL32.dll to system32)
-    $oalInstaller = Get-ChildItem $oalDir -Recurse -Filter "oalinst.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($oalInstaller) {
-        Start-Process $oalInstaller.FullName -ArgumentList "/S" -Wait -ErrorAction SilentlyContinue
-        Write-OK "OpenAL Soft installed."
-    } else {
-        # Fallback: manually copy the DLL to System32
-        $oalDll = Get-ChildItem $oalDir -Recurse -Filter "OpenAL32.dll" -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -match "Win64" } | Select-Object -First 1
-        if ($oalDll) {
-            Copy-Item $oalDll.FullName "$env:SystemRoot\System32\OpenAL32.dll" -Force -ErrorAction SilentlyContinue
-            Write-OK "OpenAL32.dll copied to System32."
-        } else {
-            Write-Skip "OpenAL install skipped — games that ship their own DLL are unaffected."
-        }
-    }
+if (Test-Path "$env:SystemRoot\System32\OpenAL32.dll") {
+    Write-Skip "OpenAL already installed — skipped."
 } else {
-    Write-Skip "OpenAL download failed — most games bundle their own OpenAL32.dll anyway."
+    Write-Info "Installing OpenAL Soft..."
+    $oalUrl  = "https://github.com/kcat/openal-soft/releases/download/1.23.1/openal-soft-1.23.1-bin.zip"
+    $oalZip  = "$env:TEMP\openal-soft.zip"
+    $oalDir  = "$env:TEMP\openal-soft"
+    $ok = Get-Runtime $oalUrl $oalZip
+    if ($ok) {
+        Expand-Archive -Path $oalZip -DestinationPath $oalDir -Force -ErrorAction SilentlyContinue
+        # Run the Win64 installer (router.exe copies OpenAL32.dll to system32)
+        $oalInstaller = Get-ChildItem $oalDir -Recurse -Filter "oalinst.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($oalInstaller) {
+            Start-Process $oalInstaller.FullName -ArgumentList "/S" -Wait -ErrorAction SilentlyContinue
+            Write-OK "OpenAL Soft installed."
+        } else {
+            # Fallback: manually copy the DLL to System32
+            $oalDll = Get-ChildItem $oalDir -Recurse -Filter "OpenAL32.dll" -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -match "Win64" } | Select-Object -First 1
+            if ($oalDll) {
+                Copy-Item $oalDll.FullName "$env:SystemRoot\System32\OpenAL32.dll" -Force -ErrorAction SilentlyContinue
+                Write-OK "OpenAL32.dll copied to System32."
+            } else {
+                Write-Skip "OpenAL install skipped — games that ship their own DLL are unaffected."
+            }
+        }
+    } else {
+        Write-Skip "OpenAL download failed — most games bundle their own OpenAL32.dll anyway."
+    }
 }
 
 # ── WebView2 Runtime ──────────────────────────────────────────────────────────
@@ -1883,18 +1908,49 @@ if (-not $ConfigureController) {
             Install-Pkg "Playnite.Playnite" "Playnite"
             Write-OK "Playnite installed."
 
-            Write-Info "Remapping guide button (ms-gamebar) to Playnite fullscreen..."
-            $playniteExe = "`"$env:LOCALAPPDATA\Playnite\Playnite.FullscreenApp.exe`""
-            New-Item "HKCU:\Software\Classes\ms-gamebar" -Force | Out-Null
-            Set-ItemProperty "HKCU:\Software\Classes\ms-gamebar" "(default)" "URL:ms-gamebar"
-            New-ItemProperty "HKCU:\Software\Classes\ms-gamebar" "URL Protocol" -Value "" -Force | Out-Null
-            New-Item "HKCU:\Software\Classes\ms-gamebar\shell\open\command" -Force | Out-Null
-            Set-ItemProperty "HKCU:\Software\Classes\ms-gamebar\shell\open\command" "(default)" $playniteExe
+            Install-Pkg "AutoHotkey.AutoHotkey" "AutoHotkey v2"
+
+            $ahkDir    = "$env:LOCALAPPDATA\Playnite"
+            $ahkScript = "$ahkDir\guide-button.ahk"
+            New-Item -ItemType Directory -Path $ahkDir -Force | Out-Null
+
+            Set-Content -Path $ahkScript -Encoding UTF8 -Value @'
+#Requires AutoHotkey v2.0
+#SingleInstance Force
+A_IconTip := "Playnite Guide Button"
+
+VK07::
+{
+    if !ProcessExist("Playnite.FullscreenApp.exe")
+        Run EnvGet("LOCALAPPDATA") "\Playnite\Playnite.FullscreenApp.exe"
+    else {
+        WinShow "ahk_exe Playnite.FullscreenApp.exe"
+        WinActivate "ahk_exe Playnite.FullscreenApp.exe"
+    }
+}
+'@
+            Write-OK "Guide button script written."
+
+            # Resolve AHK v2 executable (winget installs to Program Files\AutoHotkey\v2)
+            $ahkExe = "C:\Program Files\AutoHotkey\v2\AutoHotkey64.exe"
+            if (-not (Test-Path $ahkExe)) { $ahkExe = "C:\Program Files\AutoHotkey\AutoHotkey64.exe" }
+
+            $startupDir = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup"
+            $lnkPath    = "$startupDir\Playnite Guide Button.lnk"
+            $wsh = New-Object -ComObject WScript.Shell
+            $lnk = $wsh.CreateShortcut($lnkPath)
+            $lnk.TargetPath       = $ahkExe
+            $lnk.Arguments        = "`"$ahkScript`""
+            $lnk.WorkingDirectory = $ahkDir
+            $lnk.WindowStyle      = 7   # minimised / hidden
+            $lnk.Description      = "Playnite Guide Button handler"
+            $lnk.Save()
+            Write-OK "Guide button handler added to startup."
 
             Write-Info "Disabling Steam guide button capture..."
             Invoke-SteamGuideButtonConfig
 
-            Write-OK "Playnite is the controller frontend. Guide button launches Playnite fullscreen."
+            Write-OK "Playnite is the controller frontend. Guide button launches Playnite fullscreen (via AutoHotkey XInput)."
         }
     }
 }
@@ -2013,6 +2069,29 @@ if (Test-Path $bgAppsBase) {
     Write-Info "Per-app background access overrides cleared."
 }
 
+# ── Restore background access for Xbox Game Bar (required for FSE overlay) ────
+# The global disable + per-app nuke above would also kill Game Bar's background
+# hooks, preventing the Xbox Full Screen Experience overlay from appearing in-game.
+$xboxBgPatterns = @(
+    "Microsoft.XboxGamingOverlay_*",
+    "Microsoft.GamingApp_*",
+    "Microsoft.XboxApp_*",
+    "Microsoft.XboxIdentityProvider_*"
+)
+if (Test-Path $bgAppsBase) {
+    Get-ChildItem $bgAppsBase -ErrorAction SilentlyContinue | ForEach-Object {
+        $leaf = Split-Path $_.PSPath -Leaf
+        foreach ($pat in $xboxBgPatterns) {
+            if ($leaf -like $pat) {
+                Set-ItemProperty $_.PSPath -Name "Disabled"       -Value 0 -Type DWord -ErrorAction SilentlyContinue
+                Set-ItemProperty $_.PSPath -Name "DisabledByUser" -Value 0 -Type DWord -ErrorAction SilentlyContinue
+                Write-Info "Background access restored: $leaf"
+            }
+        }
+    }
+}
+Write-Info "Xbox Game Bar background access preserved (required for XboxFullscreenExperienceTool)."
+
 # ── Services: Automatic → Manual (demand-start) ───────────────────────────────
 # These services are harmless at zero — Windows starts them the moment something
 # actually needs them. Keeping them Automatic wastes RAM/CPU every boot.
@@ -2031,7 +2110,8 @@ $toManual = @(
     "PhoneSvc",         # Phone Link / Your Phone
     "PrintNotify",      # Printer notifications
     "Fax",              # Fax service
-    "NaturalAuthentication" # Windows Hello sensor polling
+    "NaturalAuthentication", # Windows Hello sensor polling
+    "TabletInputService"    # Touch Keyboard — kept demand-startable for FSE touch simulation
 )
 foreach ($svc in $toManual) {
     $s = Get-Service $svc -ErrorAction SilentlyContinue
